@@ -685,6 +685,16 @@ class KafkaProducer(object):
         begin = time.time()
         elapsed = 0.0
         metadata_event = None
+
+        def _on_metadata_resp_received(e, *args):
+            assert e == metadata_event
+
+            if isinstance(args[0], Errors.TopicAuthorizationFailedError):
+                for topic_err in args[0].args:
+                    log.warning("Removing %s from metadata requests (authorization failed)", topic_err)
+                    self._metadata.unauthorized_topics.add(topic_err)
+            e.set()
+
         while True:
             partitions = self._metadata.partitions_for_topic(topic)
             if partitions is not None:
@@ -697,7 +707,7 @@ class KafkaProducer(object):
 
             metadata_event.clear()
             future = self._metadata.request_update()
-            future.add_both(lambda e, *args: e.set(), metadata_event)
+            future.add_both(_on_metadata_resp_received, metadata_event)
             self._sender.wakeup()
             metadata_event.wait(max_wait - elapsed)
             elapsed = time.time() - begin
