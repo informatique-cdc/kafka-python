@@ -133,6 +133,11 @@ class KafkaProducer(object):
             but the second succeeds, then the records in the second batch may
             appear first.
             Default: 0.
+        blocking (bool): if True, the send() method will block until the
+            operation is completed, and will return this result to the caller,
+            or will raise an exception in the error case.
+            If False, send() will return a Future for this operation.
+            Default: False
         batch_size (int): Requests sent to brokers will contain multiple
             batches, one for each partition with data available to be sent.
             A small batch size will make batching less common and may reduce
@@ -295,6 +300,7 @@ class KafkaProducer(object):
         'bootstrap_topics_filter': set(),
         'compression_type': None,
         'retries': 0,
+        'blocking': False,
         'batch_size': 16384,
         'linger_ms': 0,
         'partitioner': DefaultPartitioner(),
@@ -538,7 +544,8 @@ class KafkaProducer(object):
             return LegacyRecordBatchBuilder.estimate_size_in_bytes(
                 magic, self.config['compression_type'], key, value)
 
-    def send(self, topic, value=None, key=None, headers=None, partition=None, timestamp_ms=None):
+    def send(self, topic, value=None, key=None, headers=None, partition=None,
+             timestamp_ms=None, blocking=None):
         """Publish a message to a topic.
 
         Arguments:
@@ -563,18 +570,25 @@ class KafkaProducer(object):
                 are tuples of str key and bytes value.
             timestamp_ms (int, optional): epoch milliseconds (from Jan 1 1970 UTC)
                 to use as the message timestamp. Defaults to current time.
+            blocking (bool, optional): will block when True, or not block when False
 
         Returns:
-            FutureRecordMetadata: resolves to RecordMetadata
+            FutureRecordMetadata: resolves to RecordMetadata (if blocking config is False)
+            The return of FutureRecordMetadata if blocking config is set
 
         Raises:
             KafkaTimeoutError: if unable to fetch topic metadata, or unable
                 to obtain memory buffer prior to configured max_block_ms
+            FutureRecordMetadata exception: if blocking config is set and
+                an exception rose while sending.
         """
         assert value is not None or self.config['api_version'] >= (0, 8, 1), (
             'Null messages require kafka >= 0.8.1')
         assert not (value is None and key is None), 'Need at least one: key or value'
         key_bytes = value_bytes = None
+        if blocking is None:
+            blocking = self.config["blocking"]
+
         try:
             self._wait_on_metadata(topic, self.config['max_block_ms'] / 1000.0)
 
@@ -610,19 +624,29 @@ class KafkaProducer(object):
                           " getting a new batch", tp)
                 self._sender.wakeup()
 
+            if blocking:
+                return future.get()
+
             return future
             # handling exceptions and record the errors;
             # for API exceptions return them in the future,
             # for other exceptions raise directly
         except Errors.BrokerResponseError as e:
             log.debug("Exception occurred during message send: %s", e)
-            return FutureRecordMetadata(
+            future = FutureRecordMetadata(
                 FutureProduceResult(TopicPartition(topic, partition)),
                 -1, None, None,
                 len(key_bytes) if key_bytes is not None else -1,
                 len(value_bytes) if value_bytes is not None else -1,
                 sum(len(h_key.encode("utf-8")) + len(h_value) for h_key, h_value in headers) if headers else -1,
             ).failure(e)
+
+            if blocking:
+                # Should always raise an Exception
+                return future.get()
+
+            return future
+
 
     def flush(self, timeout=None):
         """
@@ -685,6 +709,16 @@ class KafkaProducer(object):
         begin = time.time()
         elapsed = 0.0
         metadata_event = None
+
+        def _on_metadata_resp_received(e, *args):
+            assert e == metadata_event
+
+            if isinstance(args[0], Errors.TopicAuthorizationFailedError):
+                for topic_err in args[0].args:
+                    log.warning("Removing %s from metadata requests (authorization failed)", topic_err)
+                    self._metadata.unauthorized_topics.add(topic_err)
+            e.set()
+
         while True:
             partitions = self._metadata.partitions_for_topic(topic)
             if partitions is not None:
@@ -697,7 +731,7 @@ class KafkaProducer(object):
 
             metadata_event.clear()
             future = self._metadata.request_update()
-            future.add_both(lambda e, *args: e.set(), metadata_event)
+            future.add_both(_on_metadata_resp_received, metadata_event)
             self._sender.wakeup()
             metadata_event.wait(max_wait - elapsed)
             elapsed = time.time() - begin

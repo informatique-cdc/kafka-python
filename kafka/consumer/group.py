@@ -392,6 +392,11 @@ class KafkaConsumer(six.Iterator):
         self._consumer_timeout = float('inf')
 
         if topics:
+            available_topics = self.topics()
+            requested_topics = set(topics)
+            if not requested_topics < available_topics:
+                log.warning("Subscribing to non available topics: %s", ", ".join(requested_topics - available_topics))
+
             self._subscription.subscribe(topics=topics)
             self._client.set_topics(topics)
 
