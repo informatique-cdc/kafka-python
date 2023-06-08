@@ -613,7 +613,7 @@ class BrokerConnection(object):
             while len(data) < n:
                 fragment = self._sock.recv(n - len(data))
                 if not fragment:
-                    raise ConnectionError('Connection reset during recv')
+                    raise ConnectionError('Connection closed during recv')
                 data += fragment
             return data
         finally:
@@ -645,7 +645,7 @@ class BrokerConnection(object):
                     data = self._recv_bytes_blocking(4)
 
                 except (ConnectionError, TimeoutError) as e:
-                    log.exception("%s: Error receiving reply from server", self)
+                    log.exception("%s: No reply from server. Authentication failed (or network error).", self)
                     err = Errors.KafkaConnectionError("%s: %s" % (self, e))
                     close = True
 
