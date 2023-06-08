@@ -826,10 +826,14 @@ class KafkaClient(object):
             return self.config['reconnect_backoff_ms']
 
         if self._can_send_request(node_id):
-            topics = list(self._topics)
+            topics = set(self._topics)
             if not topics and self.cluster.is_bootstrap(node_id):
-                topics = list(self.config['bootstrap_topics_filter'])
+                topics = set(self.config['bootstrap_topics_filter'])
 
+            # Do not request metadata for topics we know we are unauthorized
+            topics -= self.cluster.unauthorized_topics
+
+            topics = list(topics)
             if self.cluster.need_all_topic_metadata or not topics:
                 topics = [] if self.config['api_version'] < (0, 10) else None
             api_version = 0 if self.config['api_version'] < (0, 10) else 1
