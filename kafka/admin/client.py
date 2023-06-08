@@ -1032,9 +1032,17 @@ class KafkaAdminClient(object):
                                 for (member, member_field, member_name)  in zip(members, member_schema.fields, member_schema.names):
                                     if protocol_type_is_consumer:
                                         if member_name == 'member_metadata' and member:
-                                            member_information.append(ConsumerProtocolMemberMetadata.decode(member))
+                                            try:
+                                                member_information.append(ConsumerProtocolMemberMetadata.decode(member))
+                                            except ValueError:
+                                                # Sometime server answers back an assignment in this field...
+                                                # Could be a wrong message from the Leader...
+                                                # See https://cwiki.apache.org/confluence/display/KAFKA/Kafka+Client-side+Assignment+Proposal#KafkaClientsideAssignmentProposal-ConsumerEmbeddedProtocol
+                                                member_information.append(ConsumerProtocolMemberAssignment.decode(member))
+
                                         elif member_name == 'member_assignment' and member:
                                             member_information.append(ConsumerProtocolMemberAssignment.decode(member))
+
                                         else:
                                             member_information.append(member)
                                 member_info_tuple = MemberInformation._make(member_information)
